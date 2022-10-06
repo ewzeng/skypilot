@@ -31,7 +31,6 @@ import datetime
 import functools
 import getpass
 import os
-import pathlib
 import shlex
 import subprocess
 import sys
@@ -45,6 +44,7 @@ from rich import progress as rich_progress
 import yaml
 
 import sky
+from sky import authentication as auth
 from sky import backends
 from sky import check as sky_check
 from sky import clouds
@@ -2342,49 +2342,98 @@ def storage_delete(names: Tuple[str], all: bool):  # pylint: disable=redefined-b
     for name in names:
         sky.storage_delete(name)
 
+
 @cli.group(cls=_NaturalOrderGroup)
 def local():
-    """Sky Local Demo."""
+    """SkyPilot Local Demo."""
     pass
 
 
 @local.command('up', cls=_DocumentedCodeCommand)
 def local_up():
-    """Launches Sky in docker on your laptop.
+    """Launches SkyPilot in docker on your laptop.
 
-    Runs Sky inside a container on your laptop.
+    Launches a local container and then runs `sky admin deploy`.
     """
-    click.secho('Launching Sky locally in docker.', fg='green')
-    click.secho(
-        'Make sure you have configured your keypairs in local/.env and '
-        'local/docker-cluster-cfg.yaml!',
-        fg='red')
-    scripts_path = pathlib.Path(__file__).parent.parent.resolve() / 'local'
-    setup_script = scripts_path / 'setup.sh'
+    # TODO(ewzeng):
+    # [ ] 1. Check for docker installation.
+    # [ ] 2. Check for base/container image. If not present, build.
+
+    click.secho('Launching SkyPilot locally in docker.', fg='green')
+
+    # Get or generate ssh keys
+    private_key_path = os.path.expanduser(auth.PRIVATE_SSH_KEY_PATH)
+    _, public_key = auth.get_or_generate_keys(
+        private_key_path, auth.get_public_key_path(private_key_path))
+
+    localdocker_path = backend_utils.SKY_USER_FILE_PATH + '/localdocker/'
+    localdocker_path = os.path.expanduser(localdocker_path)
+    os.makedirs(localdocker_path, exist_ok=True)
+
+    # Create docker-compose.yml
+    docker_compose_yml_path = localdocker_path + 'docker-compose.yml'
+    backend_utils.fill_template('local-docker-compose.yml.j2', {
+        'public_key': public_key,
+    }, docker_compose_yml_path)
+
+    # Launch docker container
     try:
-        subprocess_utils.run([setup_script], cwd=scripts_path)
-        click.secho(
-            'Done! You may now run tasks on docker cluster. e.g., try '
-            'sky launch -y -c docker examples/minimal.yaml',
-            fg='green')
+        subprocess_utils.run('docker compose up -d', cwd=localdocker_path)
     except subprocess.CalledProcessError:
-        click.secho('Failed to launch Sky docker container.', fg='red')
+        click.secho('Failed to launch docker cluster.', fg='red')
+
+    # Launch SkyPilot on docker container with `sky admin deploy`
+    deploy_path = localdocker_path + 'docker-cluster-cfg.yml'
+    backend_utils.fill_template('local-docker-cluster-cfg.yml.j2', {
+        'private_key_path': private_key_path,
+    }, deploy_path)
+    subprocess_utils.run(f'sky admin deploy {deploy_path}')
+
+    # Replace AUTH_PLACEHOLDERs in generated local cluster config
+    config = onprem_utils.get_local_cluster_config_or_error('docker')
+    config['auth']['ssh_user'] = 'sky'
+    config['auth']['ssh_private_key'] = private_key_path
+    config_path = onprem_utils.SKY_USER_LOCAL_CONFIG_PATH.format('docker')
+    config_path = os.path.expanduser(config_path)
+    common_utils.dump_yaml(config_path, config)
+
+    click.secho(
+        'Done! You may now run tasks on docker cluster. e.g., try '
+        'sky launch -y -c docker examples/minimal.yaml',
+        fg='green')
 
 
 @local.command('down', cls=_DocumentedCodeCommand)
 def local_down():
-    """Launches Sky in docker on your laptop.
+    """Tearsdown SkyPilot and local container. """
+    click.secho('Removing SkyPilot docker container.', fg='green')
 
-    Runs Sky inside a container on your laptop.
-    """
-    click.secho('Removing Sky docker container.', fg='green')
-    scripts_path = pathlib.Path(__file__).parent.parent.resolve() / 'local'
-    cleanup_script = scripts_path / 'cleanup.sh'
+    # sky down
+    subprocess_utils.run('sky down -py docker')
+
+    localdocker_path = backend_utils.SKY_USER_FILE_PATH + '/localdocker/'
+    localdocker_path = os.path.expanduser(localdocker_path)
+
+    # Teardown docker container
     try:
-        subprocess_utils.run([cleanup_script], cwd=scripts_path)
-        click.secho('Cleanup done!', fg='green')
+        subprocess_utils.run('docker compose down', cwd=localdocker_path)
     except subprocess.CalledProcessError:
-        click.secho('Failed to run down Sky docker container.', fg='red')
+        click.secho('Failed to down docker.', fg='red')
+
+    # Delete generated files
+    docker_compose_yml_path = localdocker_path + 'docker-compose.yml'
+    deploy_path = localdocker_path + 'docker-cluster-cfg.yml'
+    config_path = onprem_utils.SKY_USER_LOCAL_CONFIG_PATH.format('docker')
+    config_path = os.path.expanduser(config_path)
+    try:
+        os.remove(docker_compose_yml_path)
+        os.remove(deploy_path)
+        os.remove(config_path)
+    except OSError:
+        click.secho('Failed to delete generated files.', fg='red')
+
+    click.secho('Cleanup done!', fg='green')
+
 
 @cli.group(cls=_NaturalOrderGroup)
 def admin():

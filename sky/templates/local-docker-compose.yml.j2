@@ -8,7 +8,7 @@ services:
       echo Adding SSH Keys;
       mkdir -p ~/.ssh;
       chmod 700 ~/.ssh;
-      echo ${PUBSSHKEY} > ~/.ssh/authorized_keys;
+      echo {{public_key}} > ~/.ssh/authorized_keys;
       chmod 600 ~/.ssh/authorized_keys;
       sudo service ssh restart;
       mkdir -p /home/sky/sky_workdir;
