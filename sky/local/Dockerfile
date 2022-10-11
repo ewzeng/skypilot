@@ -1,8 +1,7 @@
 FROM continuumio/miniconda3:4.11.0
 
 # Initialize conda for root user, install ssh and other local dependencies
-RUN conda install -c conda-forge google-cloud-sdk && \
-    apt update -y && \
+RUN apt update -y && \
     apt install rsync sudo patch openssh-server pciutils nano -y && \
     rm -rf /var/lib/apt/lists/* && \
     apt remove -y python3 && \
@@ -21,13 +20,12 @@ RUN useradd -m -s /bin/bash sky && \
     echo 'Defaults        secure_path="/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/sudoers.d/sky
 
 # Install SkyPilot pip dependencies
+# Hack: we only install SkyPilot[aws] to optimize build time
 RUN pip install wheel Click colorama cryptography jinja2 jsonschema && \
     pip install networkx oauth2client pandas pendulum PrettyTable && \
     pip install ray[default]==1.13 rich tabulate filelock 'grpcio<=1.43.0' && \
     pip install packaging 'protobuf<4.0.0' psutil pulp && \
     pip install awscli boto3 pycryptodome==3.12.0 && \
-    pip install azure-cli==2.31.0 azure-core && \
-    pip install google-api-python-client google-cloud-storage && \
     pip install docker
 
 # Install SkyPilot. This is purposely separate from installing SkyPilot
@@ -35,7 +33,7 @@ RUN pip install wheel Click colorama cryptography jinja2 jsonschema && \
 COPY ../ /skypilot/sky/
 RUN cd /skypilot/ && \
     mv -v sky/setup_files/* . && \
-    pip install ".[all]"
+    pip install ".[aws]"
 
 # Switch to sky user, set WORKDIR, and initialize conda for sky user
 USER sky
