@@ -1,0 +1,43 @@
+FROM continuumio/miniconda3:4.11.0
+
+# Initialize conda for root user, install ssh and other local dependencies
+RUN conda install -c conda-forge google-cloud-sdk && \
+    apt update -y && \
+    apt install rsync sudo patch openssh-server pciutils nano -y && \
+    rm -rf /var/lib/apt/lists/* && \
+    apt remove -y python3 && \
+    conda init
+
+# Setup SSH and generate hostkeys
+RUN mkdir -p /var/run/sshd && \
+    sed -i 's/PermitRootLogin prohibit-password/PermitRootLogin yes/' /etc/ssh/sshd_config && \
+    sed 's@session\s*required\s*pam_loginuid.so@session optional pam_loginuid.so@g' -i /etc/pam.d/sshd && \
+    cd /etc/ssh/ && \
+    ssh-keygen -A
+
+# Setup new user named sky and add to sudoers. Also add /opt/conda/bin to sudo path.
+RUN useradd -m -s /bin/bash sky && \
+    echo "sky ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
+    echo 'Defaults        secure_path="/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/sudoers.d/sky
+
+# Install SkyPilot pip dependencies
+RUN pip install wheel Click colorama cryptography jinja2 jsonschema && \
+    pip install networkx oauth2client pandas pendulum PrettyTable && \
+    pip install ray[default]==1.13 rich tabulate filelock 'grpcio<=1.43.0' && \
+    pip install packaging 'protobuf<4.0.0' psutil pulp && \
+    pip install awscli boto3 pycryptodome==3.12.0 && \
+    pip install azure-cli==2.31.0 azure-core && \
+    pip install google-api-python-client google-cloud-storage && \
+    pip install docker
+
+# Install SkyPilot. This is purposely separate from installing SkyPilot
+# dependencies to optimize rebuild time
+COPY ../ /skypilot/sky/
+RUN cd /skypilot/ && \
+    mv -v sky/setup_files/* . && \
+    pip install ".[all]"
+
+# Switch to sky user, set WORKDIR, and initialize conda for sky user
+USER sky
+WORKDIR /home/sky
+RUN conda init

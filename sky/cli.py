@@ -2355,9 +2355,15 @@ def local_up():
 
     Launches a local container and then runs `sky admin deploy`.
     """
-    # TODO(ewzeng):
-    # [ ] 1. Check for docker installation.
-    # [ ] 2. Check for base/container image. If not present, build.
+    click.secho('Building docker image.', fg='green')
+    try:
+        # Build docker image
+        subprocess_utils.run('docker build -t sky:local -f local/Dockerfile .',
+                             cwd=sky.__root_dir__)
+        # Delete previously generated docker images
+        subprocess_utils.run('docker image prune -f', cwd=sky.__root_dir__)
+    except subprocess.CalledProcessError:
+        click.secho('Failed to build docker image.', fg='red')
 
     click.secho('Launching SkyPilot locally in docker.', fg='green')
 
