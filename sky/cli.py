@@ -35,6 +35,7 @@ import shlex
 import subprocess
 import sys
 import textwrap
+import time
 import typing
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -2364,6 +2365,7 @@ def local_up():
         subprocess_utils.run('docker image prune -f', cwd=sky.__root_dir__)
     except subprocess.CalledProcessError:
         click.secho('Failed to build docker image.', fg='red')
+        raise
 
     click.secho('Launching SkyPilot locally in docker.', fg='green')
 
@@ -2387,13 +2389,22 @@ def local_up():
         subprocess_utils.run('docker compose up -d', cwd=localdocker_path)
     except subprocess.CalledProcessError:
         click.secho('Failed to launch docker cluster.', fg='red')
+        raise
 
     # Launch SkyPilot on docker container with `sky admin deploy`
     deploy_path = localdocker_path + 'docker-cluster-cfg.yml'
     backend_utils.fill_template('local-docker-cluster-cfg.yml.j2', {
         'private_key_path': private_key_path,
     }, deploy_path)
-    subprocess_utils.run(f'sky admin deploy {deploy_path}')
+    try:
+        # Give ssh time to set up before admin_deploy
+        time.sleep(1)
+        admin_deploy((deploy_path,))
+    except SystemExit as e:
+        # Because of click, admin_deploy will try to exit the process
+        if e.code != 0:
+            click.secho('Failed to launch docker cluster.', fg='red')
+            raise
 
     # Replace AUTH_PLACEHOLDERs in generated local cluster config
     config = onprem_utils.get_local_cluster_config_or_error('docker')
@@ -2413,9 +2424,11 @@ def local_up():
 def local_down():
     """Tearsdown SkyPilot and local container. """
     click.secho('Removing SkyPilot docker container.', fg='green')
-
-    # sky down
-    subprocess_utils.run('sky down -py docker')
+    _terminate_or_stop_clusters(('docker',),
+                                apply_to_all=None,
+                                terminate=True,
+                                no_confirm=True,
+                                purge=True)
 
     localdocker_path = backend_utils.SKY_USER_FILE_PATH + '/localdocker/'
     localdocker_path = os.path.expanduser(localdocker_path)
