@@ -2517,9 +2517,9 @@ def local_up():
 def local_down():
     """Tearsdown SkyPilot and local container. """
     click.secho('Removing SkyPilot docker container.', fg='green')
-    _terminate_or_stop_clusters(('docker',),
+    _down_or_stop_clusters(('docker',),
                                 apply_to_all=None,
-                                terminate=True,
+                                down=True,
                                 no_confirm=True,
                                 purge=True)
 

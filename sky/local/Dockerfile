@@ -19,6 +19,9 @@ RUN useradd -m -s /bin/bash sky && \
     echo "sky ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers && \
     echo 'Defaults        secure_path="/opt/conda/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/sudoers.d/sky
 
+# Switch to sky user
+USER sky
+
 # Install SkyPilot pip dependencies
 # Hack: we only install SkyPilot[aws] to optimize build time
 RUN pip install wheel Click colorama cryptography jinja2 jsonschema && \
@@ -32,10 +35,9 @@ RUN pip install wheel Click colorama cryptography jinja2 jsonschema && \
 # dependencies to optimize rebuild time
 COPY ../ /skypilot/sky/
 RUN cd /skypilot/ && \
-    mv -v sky/setup_files/* . && \
+    sudo mv -v sky/setup_files/* . && \
     pip install ".[aws]"
 
-# Switch to sky user, set WORKDIR, and initialize conda for sky user
-USER sky
+# Set WORKDIR and initialize conda for sky user
 WORKDIR /home/sky
 RUN conda init
