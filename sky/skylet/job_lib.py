@@ -11,8 +11,8 @@ from typing import Any, Dict, List, Optional
 
 import filelock
 
-from sky import constants
 from sky import sky_logging
+from sky.skylet import constants
 from sky.utils import common_utils
 from sky.utils import subprocess_utils
 from sky.utils import db_utils
@@ -248,12 +248,12 @@ def get_latest_job_id() -> Optional[int]:
         return job_id
 
 
-def get_job_time(job_id: int, is_end: bool) -> Optional[int]:
+def get_job_time_payload(job_id: int, is_end: bool) -> Optional[int]:
     field = 'end_at' if is_end else 'start_at'
     rows = _CURSOR.execute(f'SELECT {field} FROM jobs WHERE job_id=(?)',
                            (job_id,))
     for (timestamp,) in rows:
-        return timestamp
+        return common_utils.encode_payload(timestamp)
 
 
 def _get_records_from_rows(rows) -> List[Dict[str, Any]]:
@@ -604,8 +604,11 @@ class JobLibCodeGen:
         return cls._build(code)
 
     @classmethod
-    def tail_logs(cls, job_owner: str, job_id: Optional[int],
-                  spot_job_id: Optional[int]) -> str:
+    def tail_logs(cls,
+                  job_owner: str,
+                  job_id: Optional[int],
+                  spot_job_id: Optional[int],
+                  follow: bool = True) -> str:
         code = [
             f'job_id = {job_id} if {job_id} is not None '
             'else job_lib.get_latest_job_id()',
@@ -613,7 +616,7 @@ class JobLibCodeGen:
             (f'log_dir = os.path.join({constants.SKY_LOGS_DIRECTORY!r}, '
              'run_timestamp)'),
             (f'log_lib.tail_logs({job_owner!r},'
-             f'job_id, log_dir, {spot_job_id!r})'),
+             f'job_id, log_dir, {spot_job_id!r}, follow={follow})'),
         ]
         return cls._build(code)
 
@@ -629,13 +632,13 @@ class JobLibCodeGen:
         return cls._build(code)
 
     @classmethod
-    def get_job_time(cls,
-                     job_id: Optional[int] = None,
-                     is_end: bool = False) -> str:
+    def get_job_time_payload(cls,
+                             job_id: Optional[int] = None,
+                             is_end: bool = False) -> str:
         code = [
             f'job_id = {job_id} if {job_id} is not None '
             'else job_lib.get_latest_job_id()',
-            f'job_time = job_lib.get_job_time(job_id, {is_end})',
+            f'job_time = job_lib.get_job_time_payload(job_id, {is_end})',
             'print(job_time, flush=True)',
         ]
         return cls._build(code)

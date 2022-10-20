@@ -22,7 +22,6 @@ import sky
 from sky import backends
 from sky import clouds
 from sky import cloud_stores
-from sky import constants
 from sky import exceptions
 from sky import global_user_state
 from sky import resources as resources_lib
@@ -36,6 +35,7 @@ from sky.backends import backend_utils
 from sky.backends import onprem_utils
 from sky.backends import wheel_utils
 from sky.skylet import autostop_lib
+from sky.skylet import constants
 from sky.skylet import job_lib
 from sky.skylet import log_lib
 from sky.usage import usage_lib
@@ -54,7 +54,7 @@ OptimizeTarget = optimizer.OptimizeTarget
 Path = str
 
 SKY_REMOTE_APP_DIR = backend_utils.SKY_REMOTE_APP_DIR
-SKY_REMOTE_WORKDIR = backend_utils.SKY_REMOTE_WORKDIR
+SKY_REMOTE_WORKDIR = constants.SKY_REMOTE_WORKDIR
 
 logger = sky_logging.init_logger(__name__)
 
@@ -176,10 +176,11 @@ class RayCodeGen:
             import ray
             import ray.util as ray_util
 
+            from sky.skylet import constants
             from sky.skylet import job_lib
             from sky.utils import log_utils
 
-            SKY_REMOTE_WORKDIR = {log_lib.SKY_REMOTE_WORKDIR!r}
+            SKY_REMOTE_WORKDIR = {constants.SKY_REMOTE_WORKDIR!r}
             job_lib.set_status({job_id!r}, job_lib.JobStatus.PENDING)
 
             ray.init(address={ray_address!r}, namespace='__sky__{job_id}__', log_to_driver=True)
@@ -923,7 +924,9 @@ class RetryingVmProvisioner(object):
                 self._wheel_hash,
                 region=region,
                 zones=zones,
-                dryrun=dryrun)
+                dryrun=dryrun,
+                keep_launch_fields_in_existing_config=prev_cluster_status
+                is not None)
             if dryrun:
                 return
             cluster_config_file = config_dict['ray']
@@ -1115,6 +1118,7 @@ class RetryingVmProvisioner(object):
             # different order from directly running in the console. The
             # `--log-style` and `--log-color` flags do not work. To reproduce,
             # `ray up --log-style pretty --log-color true | tee tmp.out`.
+
             returncode, stdout, stderr = log_lib.run_with_log(
                 # NOTE: --no-restart solves the following bug.  Without it, if
                 # 'ray up' (sky launch) twice on a cluster with >1 node, the
@@ -1132,7 +1136,15 @@ class RetryingVmProvisioner(object):
                 line_processor=log_utils.RayUpLineProcessor(),
                 # Reduce BOTO_MAX_RETRIES from 12 to 5 to avoid long hanging
                 # time during 'ray up' if insufficient capacity occurs.
-                env=dict(os.environ, BOTO_MAX_RETRIES='5'),
+                env=dict(
+                    os.environ,
+                    BOTO_MAX_RETRIES='5',
+                    # Use environment variables to disable the ray usage stats
+                    # (to avoid the 10 second wait for usage collection
+                    # confirmation), as the ray version on the user's machine
+                    # may be lower version that does not support the
+                    # `--disable-usage-stats` flag.
+                    RAY_USAGE_STATS_ENABLED='0'),
                 require_outputs=True,
                 # Disable stdin to avoid ray outputs mess up the terminal with
                 # misaligned output when multithreading/multiprocessing are used
@@ -1187,11 +1199,19 @@ class RetryingVmProvisioner(object):
                         'Retrying head node provisioning due to head fetching '
                         'timeout.')
                     return True
+
+            if isinstance(to_provision_cloud, clouds.GCP):
+                if ('Quota exceeded for quota metric \'List requests\' and '
+                        'limit \'List requests per minute\'' in stderr):
+                    logger.info(
+                        'Retrying due to list request rate limit exceeded.')
+                    return True
+
             if ('Processing file mounts' in stdout and
                     'Running setup commands' not in stdout and
                     'Failed to setup head node.' in stderr):
                 logger.info(
-                    'Retrying sky runtime setup due to ssh connection issue.')
+                    'Retrying runtime setup due to ssh connection issue.')
                 return True
 
             if ('ConnectionResetError: [Errno 54] Connection reset by peer'
@@ -1202,9 +1222,18 @@ class RetryingVmProvisioner(object):
 
         retry_cnt = 0
         ray_up_return_value = None
+        # 5 seconds to 180 seconds. We need backoff for e.g., rate limit per
+        # minute errors.
+        backoff = common_utils.Backoff(initial_backoff=5,
+                                       max_backoff_factor=180 // 5)
         while (retry_cnt < _MAX_RAY_UP_RETRY and
                need_ray_up(ray_up_return_value)):
             retry_cnt += 1
+            if retry_cnt > 1:
+                sleep = backoff.current_backoff()
+                logger.info(
+                    'Retrying launching in {:.1f} seconds.'.format(sleep))
+                time.sleep(sleep)
             ray_up_return_value = ray_up()
 
         assert ray_up_return_value is not None
@@ -1315,10 +1344,16 @@ class RetryingVmProvisioner(object):
                 'of the local cluster. Check if ray[default]==1.13.0 '
                 'is installed or running correctly.')
         backend.run_on_head(handle, 'ray stop', use_cached_head_ip=False)
+
         log_lib.run_with_log(
             ['ray', 'up', '-y', '--restart-only', handle.cluster_yaml],
             log_abs_path,
             stream_logs=False,
+            # Use environment variables to disable the ray usage collection
+            # (avoid the 10 second wait for usage collection confirmation),
+            # as the ray version on the user's machine may be lower version
+            # that does not support the `--disable-usage-stats` flag.
+            env=dict(os.environ, RAY_USAGE_STATS_ENABLED='0'),
             # Disable stdin to avoid ray outputs mess up the terminal with
             # misaligned output when multithreading/multiprocessing is used.
             # Refer to: https://github.com/ray-project/ray/blob/d462172be7c5779abf37609aed08af112a533e1e/python/ray/autoscaler/_private/subprocess_output_util.py#L264 # pylint: disable=line-too-long
@@ -1672,11 +1707,11 @@ class CloudVmRayBackend(backends.Backend):
                 # RetryingVmProvisioner will retry within a cloud's regions
                 # first (if a region is not explicitly requested), then
                 # optionally retry on all other clouds (if
-                # backend.register_info() has been called).
-                # After this "round" of optimization across clouds, provisioning
-                # may still have not succeeded. This while loop will then kick
-                # in if retry_until_up is set, which will kick off new "rounds"
-                # of optimization infinitely.
+                # backend.register_info() has been called).  After this "round"
+                # of optimization across clouds, provisioning may still have
+                # not succeeded. This while loop will then kick in if
+                # retry_until_up is set, which will kick off new "rounds" of
+                # optimization infinitely.
                 try:
                     provisioner = RetryingVmProvisioner(self.log_dir, self._dag,
                                                         self._optimize_target,
@@ -1850,8 +1885,6 @@ class CloudVmRayBackend(backends.Backend):
         else:
             assert os.path.isdir(
                 full_workdir), f'{full_workdir} should be a directory.'
-            # FIXME(zongheng): audit; why not give users control to add '/'?
-            workdir = os.path.join(workdir, '')  # Adds trailing / if needed.
 
         # Raise warning if directory is too large
         dir_size = backend_utils.path_size_megabytes(full_workdir)
@@ -2328,11 +2361,13 @@ class CloudVmRayBackend(backends.Backend):
     def tail_logs(self,
                   handle: ResourceHandle,
                   job_id: Optional[int],
-                  spot_job_id: Optional[int] = None) -> int:
+                  spot_job_id: Optional[int] = None,
+                  follow: bool = True) -> int:
         job_owner = onprem_utils.get_job_owner(handle.cluster_yaml)
         code = job_lib.JobLibCodeGen.tail_logs(job_owner,
                                                job_id,
-                                               spot_job_id=spot_job_id)
+                                               spot_job_id=spot_job_id,
+                                               follow=follow)
         if job_id is None:
             logger.info(
                 'Job ID not provided. Streaming the logs of the latest job.')
@@ -2362,13 +2397,14 @@ class CloudVmRayBackend(backends.Backend):
     def tail_spot_logs(self,
                        handle: ResourceHandle,
                        job_id: Optional[int] = None,
-                       job_name: Optional[str] = None) -> None:
+                       job_name: Optional[str] = None,
+                       follow: bool = True) -> None:
         # if job_name is not None, job_id should be None
         assert job_name is None or job_id is None, (job_name, job_id)
         if job_name is not None:
-            code = spot_lib.SpotCodeGen.stream_logs_by_name(job_name)
+            code = spot_lib.SpotCodeGen.stream_logs_by_name(job_name, follow)
         else:
-            code = spot_lib.SpotCodeGen.stream_logs_by_id(job_id)
+            code = spot_lib.SpotCodeGen.stream_logs_by_id(job_id, follow)
 
         # With the stdin=subprocess.DEVNULL, the ctrl-c will not directly
         # kill the process, so we need to handle it manually here.
@@ -2483,6 +2519,9 @@ class CloudVmRayBackend(backends.Backend):
                 with backend_utils.safe_console_status(
                         f'[bold cyan]{teardown_verb} '
                         f'[green]{cluster_name}'):
+                    # FIXME(zongheng): support retries. This call can fail for
+                    # example due to GCP returning list requests per limit
+                    # exceeded.
                     returncode, stdout, stderr = log_lib.run_with_log(
                         ['ray', 'down', '-y', f.name],
                         log_abs_path,
@@ -2584,10 +2623,11 @@ class CloudVmRayBackend(backends.Backend):
     def set_autostop(self,
                      handle: ResourceHandle,
                      idle_minutes_to_autostop: Optional[int],
+                     down: bool = False,
                      stream_logs: bool = True) -> None:
         if idle_minutes_to_autostop is not None:
             code = autostop_lib.AutostopCodeGen.set_autostop(
-                idle_minutes_to_autostop, self.NAME)
+                idle_minutes_to_autostop, self.NAME, down)
             returncode, _, stderr = self.run_on_head(handle,
                                                      code,
                                                      require_outputs=True,
@@ -2598,7 +2638,7 @@ class CloudVmRayBackend(backends.Backend):
                                                stderr=stderr,
                                                stream_logs=stream_logs)
             global_user_state.set_cluster_autostop_value(
-                handle.cluster_name, idle_minutes_to_autostop)
+                handle.cluster_name, idle_minutes_to_autostop, down)
 
     # TODO(zhwu): Refactor this to a CommandRunner class, so different backends
     # can support its own command runner.
