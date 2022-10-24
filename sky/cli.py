@@ -2518,10 +2518,10 @@ def local_down():
     """Tearsdown SkyPilot and local container. """
     click.secho('Removing SkyPilot docker container.', fg='green')
     _down_or_stop_clusters(('docker',),
-                                apply_to_all=None,
-                                down=True,
-                                no_confirm=True,
-                                purge=True)
+                           apply_to_all=None,
+                           down=True,
+                           no_confirm=True,
+                           purge=True)
 
     localdocker_path = backend_utils.SKY_USER_FILE_PATH + '/localdocker/'
     localdocker_path = os.path.expanduser(localdocker_path)
