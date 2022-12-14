@@ -2758,9 +2758,9 @@ def local_up():
     click.secho('Launching SkyPilot locally in docker.', fg='green')
 
     # Get or generate ssh keys
-    private_key_path = os.path.expanduser(auth.PRIVATE_SSH_KEY_PATH)
-    _, public_key = auth.get_or_generate_keys(
-        private_key_path, auth.get_public_key_path(private_key_path))
+    private_key_path, public_key_path = auth.get_or_generate_keys()
+    with open(public_key_path, 'r') as f:
+        public_key = f.read()
 
     localdocker_path = backend_utils.SKY_USER_FILE_PATH + '/localdocker/'
     localdocker_path = os.path.expanduser(localdocker_path)

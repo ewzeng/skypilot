@@ -26,7 +26,7 @@ USER sky
 # Hack: we only install SkyPilot[aws] to optimize build time
 RUN pip install wheel Click colorama cryptography jinja2 jsonschema && \
     pip install networkx oauth2client pandas pendulum PrettyTable && \
-    pip install ray[default]==1.13 rich tabulate filelock 'grpcio<=1.43.0' && \
+    pip install ray[default]==2.01 rich tabulate filelock 'grpcio<=1.43.0' && \
     pip install packaging 'protobuf<4.0.0' psutil pulp && \
     pip install awscli boto3 pycryptodome==3.12.0 && \
     pip install docker
